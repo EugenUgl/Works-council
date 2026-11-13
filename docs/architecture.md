@@ -31,13 +31,13 @@
 Основной агент
      вызывает `read` (это клон)
   ▼
-shadow.execute(args, exec)                        index.js:1483
+shadow.execute(args, exec)                        index.js:1585
   ├─ вызывающий не корневой агент?      → настоящий инструмент
   ├─ `${task}Enabled` = false?           → retireIdleWorker + настоящий инструмент
-  ├─ dispatch(state, task, …)             index.js:1428
+  ├─ dispatch(state, task, …)             index.js:1525
        └─ pickWorker (read/web/think) или fileWorker (write/edit)
            └─ очередь выбранного слота worker.chain
-               └─ runJob(...)                 index.js:1263
+               └─ runJob(...)                 index.js:1358
                 ├─ refreshWorkerEnvironment  (перепривязка, без замены)
                 ├─ compactWorkerIfOverLimit  (замена по лимиту контекста)
                 ├─ prepareVerification    (только write/edit)
@@ -55,7 +55,7 @@ shadow.execute(args, exec)                        index.js:1483
 
 ## Клоны инструментов
 
-`mount(state, task)` — [`index.js:1452`](../index.js).
+`mount(state, task)` — [`index.js:1554`](../index.js).
 
 Для каждого инструмента из `TASKS`:
 
@@ -81,7 +81,7 @@ shadow.execute(args, exec)                        index.js:1483
 
 ## Наблюдение за воркером
 
-`ctx.on('session/event', ...)` — [`index.js:886`](../index.js).
+`ctx.on('session/event', ...)` — [`index.js:887`](../index.js).
 
 `workersByChild` отображает `childId → { state, worker }`. Пока у воркера есть
 активная `observation`, события дочерней сессии собираются так:
@@ -96,7 +96,7 @@ shadow.execute(args, exec)                        index.js:1483
 
 ## Сигналы и таймауты
 
-- `withTimeout` — [`index.js:795`](../index.js): гонка работы и `setTimeout`
+- `withTimeout` — [`index.js:796`](../index.js): гонка работы и `setTimeout`
   на `requestTimeoutMs`; в `finally` проверяется `signal.aborted`.
 - На таймауте/отмене вызывается `interruptWorker` (`ctx.subagents.interrupt`) —
   воркер гасится, а не остаётся висеть.
@@ -109,7 +109,7 @@ shadow.execute(args, exec)                        index.js:1483
 
 ## `agent/pre-step`
 
-[`index.js:1449`](../index.js):
+[`index.js:1551`](../index.js):
 
 ```js
 ctx.on('agent/pre-step', async (payload, next) =>
@@ -118,7 +118,7 @@ ctx.on('agent/pre-step', async (payload, next) =>
 
 `filterPreStep` вычищает из пачки сообщений уведомления
 «Background subagent … finished» **своих** воркеров (`withoutWorkerNotices`,
-[`index.js:190`](../index.js)). Пачка может стать пустой — это намеренно,
+[`index.js:191`](../index.js)). Пачка может стать пустой — это намеренно,
 см. [`decisions.md`](decisions.md#d1-pre-step-не-может-отказать-в-шаге).
 
 ## Инварианты
@@ -144,9 +144,12 @@ ctx.on('agent/pre-step', async (payload, next) =>
    ошибки вызова, незавершившегося хода и пропавшего ребёнка недостаточно.
    Проверяется `test/worker-lifetime.test.mjs`, `test/context-limit.test.mjs`
    и `test/pool.test.mjs`. См. [`decisions.md`](decisions.md) → D25.
-9. **Изменения одного файла сериализуются.** `write`/`edit` выбирают слот по
-   `file_path` (`fileWorker`), а не по загрузке: два параллельных изменения
-   одного файла предсказывали бы результат от одного и того же снимка, и
+9. **Изменения одного файла сериализуются — по каноническому пути.** `write`/`edit`
+   берут файловый шлюз (`withFileGate` по ключу `fileKeyOf`: `path.resolve` от
+   `cwd` плюс нижний регистр на Windows) на всё задание, включая верификацию и
+   fallback. Слот по `file_path` выбирается для тёплой истории, но гарантией не
+   является: `a.txt` и `./a.txt` хэшируются в разные слоты. Два одновременных
+   изменения одного файла предсказывали бы результат от одного снимка, и
    автоисправление второго потеряло бы первую правку. Ломать это — терять
    данные, а не скорость.
 10. **Результат воркера берётся из событий**, а не из ответа модели.

@@ -78,7 +78,7 @@
 
 ## Как читаются значения
 
-`valueOf(ref, fallback)` — [`index.js:139`](../index.js) — распознаёт и
+`valueOf(ref, fallback)` — [`index.js:140`](../index.js) — распознаёт и
 volatile-ссылку (объект с `get()`), и обычное значение. Поверх —
 `textOf` (обрезка строк), `Number(...)` с проверкой `Number.isFinite` и
 границ. Все аксессоры (`routeFor`, `timeoutMs`, `maxResultChars`, …) —

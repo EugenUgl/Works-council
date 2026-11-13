@@ -13,12 +13,12 @@
 
 | Имя | Значение | Где |
 |---|---|---|
-| `VERIFY_MAX_BYTES` | `2_000_000` | [`index.js:42`](../index.js) — больше этого файл не снимкается и не проверяется |
+| `VERIFY_MAX_BYTES` | `2_000_000` | [`index.js:43`](../index.js) — больше этого файл не снимкается и не проверяется |
 | `verifyWrites` | `true` | конфиг — выключатель всей подсистемы |
 
 ## Шаг 1 — снимок до
 
-`prepareVerification(state, toolName, args, signal)` — [`index.js:477`](../index.js):
+`prepareVerification(state, toolName, args, signal)` — [`index.js:478`](../index.js):
 
 | Условие | Результат |
 |---|---|
@@ -33,7 +33,7 @@
 
 ## Шаг 2 — предсказание
 
-`expectedContentOf(toolName, args, before)` — [`index.js:259`](../index.js), чистая
+`expectedContentOf(toolName, args, before)` — [`index.js:260`](../index.js), чистая
 функция, покрыта `test/result.test.mjs`.
 
 - `write` → `args.content` (если строка);
@@ -45,7 +45,7 @@
 
 ## Шаг 3 — сверка и ремонт
 
-`settleVerification` — [`index.js:496`](../index.js):
+`settleVerification` — [`index.js:497`](../index.js):
 
 ```
 plan === undefined || failed === true        → ничего (воркер уже упал)
@@ -60,7 +60,7 @@ sameFileText(actual, expected)                → state.verified += 1
 
 ### Сравнение
 
-`sameFileText` — [`index.js:279`](../index.js) — сравнивает с поправкой на
+`sameFileText` — [`index.js:280`](../index.js) — сравнивает с поправкой на
 переводы строк (CRLF → LF). Бэкенд вправе переписать окончания строк; это не
 расхождение.
 

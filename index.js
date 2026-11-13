@@ -36,6 +36,7 @@
  *
  * @module @local/dsh-plugin-delegate-io
  */
+import { resolve as resolvePath } from 'node:path';
 import z from '@deepseek-ai/schemastery';
 
 /** Files larger than this are not snapshotted or verified. */
@@ -1100,6 +1101,100 @@ export function apply(ctx, config) {
 	}
 
 	/**
+	 * Serialise everything that touches one file, across the whole pool.
+	 *
+	 * Slot affinity alone is not a guarantee: it hashes the literal
+	 * `file_path`, so `a.txt`, `./a.txt` and `C:\\ws\\a.txt` would land on
+	 * different slots and run their writes at the same time — the exact race
+	 * this exists to prevent. Each job snapshots `before` inside `runJob` and
+	 * later repairs the file from that prediction, so two concurrent mutations
+	 * of one file can silently drop one of them.
+	 *
+	 * This map is the guarantee, keyed by the *canonical* path: whichever slot
+	 * a call lands on, a second call for the same file waits for the first to
+	 * finish, verification included. Slots stay as they are, so history and
+	 * the pool's parallelism on different files are unaffected.
+	 *
+	 * @type {Map<string, Promise<unknown>>} Key -> tail of that file's queue.
+	 */
+	const fileGates = new Map();
+
+	/**
+	 * The canonical key of one file path, or undefined when it is not a path.
+	 *
+	 * Relative paths are resolved against the root agent's working directory
+	 * and lower-cased on Windows, because the same file reaches the tool under
+	 * several spellings and `a.txt`/`./a.txt` must share one gate.
+	 *
+	 * @param {any} state The root agent's delegation state.
+	 * @param {unknown} filePath `args.file_path` of the call.
+	 * @returns {string | undefined} The key, or undefined when there is none.
+	 */
+	function fileKeyOf(state, filePath) {
+		if (typeof filePath !== 'string' || filePath === '') return undefined;
+		const cwd = state.agent?.session?.header?.cwd;
+		let key;
+		try {
+			key = typeof cwd === 'string' && cwd !== '' ? resolvePath(cwd, filePath) : resolvePath(filePath);
+		} catch {
+			// A path the platform cannot resolve is still a distinct file; fall
+			// back to the literal text rather than dropping the guard.
+			key = filePath;
+		}
+		return process.platform === 'win32' ? key.toLowerCase() : key;
+	}
+
+	/**
+	 * Run `work` while holding the exclusive gate of one file key.
+	 *
+	 * Callers queue on the previous tail instead of a timer: the next holder is
+	 * woken by the previous release, so ordering is strict and no polling is
+	 * involved. The map entry is dropped when the queue drains, so a long
+	 * session does not accumulate one promise per file it ever edited.
+	 *
+	 * @param {string} key Canonical file key.
+	 * @param {() => Promise<any>} work The exclusive section.
+	 * @returns {Promise<any>} The result of `work`.
+	 */
+	async function withFileGate(key, work) {
+		const previous = fileGates.get(key) ?? Promise.resolve();
+		let release;
+		const held = new Promise((resolveDone) => {
+			release = resolveDone;
+		});
+		const tail = previous.then(() => held);
+		fileGates.set(key, tail);
+		await previous;
+		try {
+			return await work();
+		} finally {
+			release();
+			if (fileGates.get(key) === tail) fileGates.delete(key);
+		}
+	}
+
+	/**
+	 * Run the authoritative tool directly, still under the file's gate.
+	 *
+	 * The fallback path used to bypass the queue entirely, so a direct `write`
+	 * could race a delegated `edit` of the same file. It keeps the same
+	 * exclusivity now; the lock is re-entered by a different call, never
+	 * nested, because the delegated attempt has already released it.
+	 *
+	 * @param {any} state The root agent's delegation state.
+	 * @param {string} task The task type that owns the tool.
+	 * @param {unknown} args The tool arguments.
+	 * @param {any} exec Tool execution context.
+	 * @param {any} real The authoritative tool.
+	 * @returns {Promise<any>} The tool's own result.
+	 */
+	function executeDirect(state, task, args, exec, real) {
+		const key = task === 'write' ? fileKeyOf(state, args?.file_path) : undefined;
+		if (key === undefined) return real.execute(args, exec);
+		return withFileGate(key, () => real.execute(args, exec));
+	}
+
+	/**
 	 * Find the live Agent of one resident worker.
 	 *
 	 * The plugin disposes the activation after every job and keeps only the
@@ -1422,14 +1517,21 @@ export function apply(ctx, config) {
 	/**
 	 * Queue one call on its task's pool; different tasks stay independent.
 	 *
-	 * A file mutation is bound to the slot that owns its path (see
-	 * `fileWorker`), everything else to the least busy slot.
+	 * A file mutation holds that file's gate for the whole job (see
+	 * `withFileGate`), so no second mutation of the same file can run
+	 * concurrently even if it lands on another slot. Slot selection keeps the
+	 * hash affinity so a repeatedly edited file keeps its warm history.
 	 */
 	function dispatch(state, task, toolName, args, exec, real, jobOptions) {
 		const pool = workerFor(state, task);
 		const worker = task === 'write' ? fileWorker(pool, args?.file_path) : pickWorker(pool);
+		const key = task === 'write' ? fileKeyOf(state, args?.file_path) : undefined;
 		worker.pending += 1;
-		const run = worker.chain.then(() => runJob(state, worker, toolName, args, exec, real, jobOptions));
+		// Snapshot the slot's tail now, so the slot order is fixed at dispatch
+		// time and the gate only adds the file-level exclusion around the job.
+		const slotTail = worker.chain;
+		const runOnSlot = () => slotTail.then(() => runJob(state, worker, toolName, args, exec, real, jobOptions));
+		const run = key === undefined ? runOnSlot() : withFileGate(key, runOnSlot);
 		worker.chain = run.then(
 			() => {},
 			() => {},
@@ -1506,7 +1608,7 @@ export function apply(ctx, config) {
 						state.fallbacks += 1;
 						state.lastError = String(error?.message ?? error);
 						const count = noteOutcome(state, toolName, true);
-						const direct = await real.execute(args, exec);
+						const direct = await executeDirect(state, task, args, exec, real);
 						return hintResult(direct, real, toolName, count, state);
 					}
 				},

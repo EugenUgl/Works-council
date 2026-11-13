@@ -29,7 +29,20 @@ function harness(config) {
 	const rootTools = new Map();
 	const liveAgents = new Map();
 	const releases = new Map();
-	const log = { activations: 0, sends: 0, children: [], startedAt: 0, continuedAt: [] };
+	const log = {
+		activations: 0,
+		sends: 0,
+		children: [],
+		startedAt: 0,
+		continuedAt: [],
+		// Open worker turns, so a test can prove two turns never overlapped.
+		open: 0,
+		maxOpen: 0,
+		// Authoritative tool runs, and how many started while a worker turn of
+		// the same task was still open (the fallback race).
+		direct: 0,
+		directWhileOpen: 0,
+	};
 	/** Children that finished their first turn, by id, in completion order. */
 	const finished = [];
 
@@ -55,6 +68,8 @@ function harness(config) {
 			render: (_args, value) => [{ type: 'text', text: value.text }],
 		},
 		async execute(args) {
+			log.direct += 1;
+			if (log.open > 0) log.directWhileOpen += 1;
 			return { text: `written:${args.file_path}` };
 		},
 	};
@@ -139,6 +154,8 @@ function harness(config) {
 				const childId = `child-${log.activations}`;
 				log.children.push(childId);
 				liveAgents.set(childId, { id: childId, status: 'idle', session: { id: childId } });
+				log.open += 1;
+				log.maxOpen = Math.max(log.maxOpen, log.open);
 				const result = new Promise((resolve) => {
 					releases.set(childId, (text, failed = false) => {
 						finished.push(childId);
@@ -146,6 +163,7 @@ function harness(config) {
 							type: 'tool/result',
 							data: { message: { content: [{ type: 'text', text }] }, ...(failed ? { error: { message: text || 'read failed' } } : {}) },
 						});
+						log.open -= 1;
 						resolve({ stopReason: 'completed' });
 					});
 				});
@@ -154,11 +172,14 @@ function harness(config) {
 			async sendMessage(_sender, childId) {
 				log.sends += 1;
 				log.continuedAt.push(childId);
+				log.open += 1;
+				log.maxOpen = Math.max(log.maxOpen, log.open);
 				// Held open exactly like a first turn, so queued calls stay visible.
 				return new Promise((resolve) => {
 					releases.set(childId, (text) => {
 						emit(childId, { type: 'tool/result', data: { message: { content: [{ type: 'text', text }] } } });
 						emit(childId, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } });
+						log.open -= 1;
 						resolve('message-1');
 					});
 				});
@@ -337,19 +358,78 @@ function call(shadow, root, args) {
 	assert.deepEqual(h.log.continuedAt, ['child-1'], 'same file, same chain');
 	await h.release('child-1', 'written:two');
 	await second;
+	assert.equal(h.log.maxOpen, 1, 'the two mutations never had a turn open at the same time');
 
 	// Two DIFFERENT files do run at the same time; the pool is not serial.
 	const third = call(write, h.root, { file_path: 'other.txt', content: 'three' });
 	const fourth = call(write, h.root, { file_path: 'third.txt', content: 'four' });
 	await h.settle();
-	const inFlight = h.log.activations + h.log.sends;
-	assert.ok(inFlight >= 2, 'different files go to different slots');
+	assert.equal(h.log.maxOpen, 2, 'different files hold two turns at once');
 	await h.release('child-2', 'ok');
 	await h.release('child-3', 'ok');
 	await Promise.all([third, fourth]);
 }
 
-// 9. The settlement-notice filter resolves every pool slot, not just slot 0.
+// 9. The SAME file under different spellings is still one file. Slot affinity
+//    alone cannot see that: `same.txt` hashes to slot 0 and `./same.txt` to
+//    slot 2, so without the canonical-path gate the two writes would run in
+//    parallel, each predicting from the same snapshot. The gate is keyed by
+//    `fileKeyOf`, so the spellings collapse to one key.
+{
+	const h = harness({ writeEnabled: true, verifyWrites: false });
+	const write = h.rootTools.get('write');
+	const first = call(write, h.root, { file_path: 'same.txt', content: 'one' });
+	await h.settle();
+	assert.equal(h.log.activations, 1, 'the first spelling starts slot 0');
+	const second = call(write, h.root, { file_path: './same.txt', content: 'two' });
+	await h.settle();
+	assert.equal(h.log.activations, 1, 'the other spelling must not open its own writer');
+	assert.equal(h.log.open, 1, 'only the first turn is running');
+	await h.release('child-1', 'written:one');
+	await first;
+	await h.settle();
+	// `./same.txt` hashes to slot 2, so it starts its own session — but only
+	// after the first mutation released the file gate.
+	assert.equal(h.log.activations, 2, 'the second spelling runs on its own slot afterwards');
+	await h.release('child-2', 'written:two');
+	await second;
+	assert.equal(h.log.maxOpen, 1, 'the two spellings never overlapped');
+}
+
+// 10. The fallback path is gated too. A direct `write` used to bypass the pool
+//     entirely, so it could run while a delegated mutation of the same file was
+//     still going. Here the delegated call fails and falls back while a second
+//     call for the same file is queued: the direct tool must not run during
+//     another turn. The fallback therefore WAITS — the test must drain the
+//     queued turn before the failing call can settle.
+{
+	const h = harness({ writeEnabled: true, fallbackToDirect: true, verifyWrites: false });
+	const write = h.rootTools.get('write');
+	const failing = call(write, h.root, { file_path: 'race.txt', content: 'one' });
+	await h.settle();
+	assert.equal(h.log.activations, 1);
+	// A second mutation of the same file queues behind the gate.
+	const queued = call(write, h.root, { file_path: './race.txt', content: 'two' });
+	await h.settle();
+	assert.equal(h.log.activations, 1, 'the queued mutation is still waiting');
+	// The first call fails (empty result), so the clone falls back to the real tool.
+	await h.release('child-1', '');
+	await h.settle();
+	// Drain whatever the queued call started: its turn owns the gate, and the
+	// fallback is waiting for it. That waiting is the point of the test.
+	for (let attempt = 0; attempt < 10 && h.log.open > 0; attempt += 1) {
+		const childId = [...h.releases.keys()][0];
+		if (childId === undefined) break;
+		await h.release(childId, 'written:two');
+		await h.settle();
+	}
+	await Promise.allSettled([failing, queued]);
+	assert.ok(h.log.direct >= 1, 'the authoritative tool ran as the fallback');
+	assert.equal(h.log.directWhileOpen, 0, 'the fallback never ran during an open worker turn');
+	assert.equal(h.log.maxOpen, 1, 'no two turns ran at once');
+}
+
+// 11. The settlement-notice filter resolves every pool slot, not just slot 0.
 //    Iterating `state.workers` as `task -> worker` left slots 1 and 2 noisy:
 //    their notices reached the model's next step.
 {

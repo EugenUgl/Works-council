@@ -10,7 +10,7 @@
 
 ---
 
-## `delegate_think` — [`index.js:1631`](../index.js)
+## `delegate_think` — [`index.js:1733`](../index.js)
 
 Эскалация к **рассуждающему воркеру**, когда рассуждение — узкое место.
 
@@ -25,7 +25,7 @@
 
 1. Требует `thinkEnabled`; иначе `delegate-io: the thinking worker is switched off`.
 2. `dispatch(state, 'think', ..., { capture: 'answer', prompt: thinkPrompt(args), verify: false, remember: true, requireTool: false })`.
-3. Ответ парсится `parseThinkReply` — [`index.js:317`](../index.js).
+3. Ответ парсится `parseThinkReply` — [`index.js:318`](../index.js).
 4. Невалидный ответ → `thinkFailed += 1` → ошибка
    `the thinker replied without a valid decision object`.
 5. `{"need": "..."}` → `thinkAsks += 1`, возвращается `needText`.
@@ -59,7 +59,7 @@
 ### Гейт эскалации
 
 `noteOutcome` / `escalateHint` / `hintResult` / `overallFailureHint` —
-[`index.js:1333`](../index.js) и далее. Два независимых триггера:
+[`index.js:1428`](../index.js) и далее. Два независимых триггера:
 
 **1. Один инструмент падает подряд.** Считается в `state.failuresByTool`.
 После `thinkEscalateAfter` (по умолчанию 2; `0` — выключено) к результату
@@ -108,7 +108,7 @@ delegate_think: pass the exact errors above as evidence and let it decide]
 
 ---
 
-## `delegate_inspect` — [`index.js:1680`](../index.js)
+## `delegate_inspect` — [`index.js:1782`](../index.js)
 
 Отчёт воркера-читателя о пути вместо сырого содержимого. **Не замена `read`**:
 для точного текста нужен `read`.
@@ -129,7 +129,7 @@ delegate_think: pass the exact errors above as evidence and let it decide]
 
 ### Формат отчёта
 
-`inspectPrompt` — [`index.js:701`](../index.js) — требует ровно эту форму:
+`inspectPrompt` — [`index.js:702`](../index.js) — требует ровно эту форму:
 
 ```
 found: <1–3 предложения по focus>
@@ -155,7 +155,7 @@ confidence: <high|medium|low> · not checked: <что не прочитано>
 
 ---
 
-## `delegate_io_status` — [`index.js:1729`](../index.js)
+## `delegate_io_status` — [`index.js:1831`](../index.js)
 
 Диагностика. Параметров нет, возвращает JSON.
 

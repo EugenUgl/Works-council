@@ -12,12 +12,12 @@
 
 | Имя | Значение | Где | Смысл |
 |---|---|---|---|
-| `BUDGET_HEAD_SHARE` | `0.6` | [`index.js:48`](../index.js) | доля бюджета под «голову», остальное — «хвост» |
-| `SUMMARY_INPUT_MAX` | `80000` | [`index.js:62`](../index.js) | сколько символов отдаём воркеру для дайджеста |
+| `BUDGET_HEAD_SHARE` | `0.6` | [`index.js:49`](../index.js) | доля бюджета под «голову», остальное — «хвост» |
+| `SUMMARY_INPUT_MAX` | `80000` | [`index.js:63`](../index.js) | сколько символов отдаём воркеру для дайджеста |
 | `maxResultChars` | `12000` | конфиг | бюджет результата инструмента |
 | `inspectMaxChars` | `4000` | конфиг | бюджет отчёта `delegate_inspect` |
 
-## `budgetText(text, limit, spill)` — [`index.js:292`](../index.js)
+## `budgetText(text, limit, spill)` — [`index.js:293`](../index.js)
 
 Чистая функция, покрыта `test/result.test.mjs`.
 
@@ -35,7 +35,7 @@
 
 ## Спилл
 
-`saveSpill` — [`index.js:543`](../index.js):
+`saveSpill` — [`index.js:544`](../index.js):
 
 ```js
 spill.saveText({
@@ -49,7 +49,7 @@ spill.saveText({
 `owner` — сессия **основного** агента, а не воркера: копию ищет пользователь и
 основной агент. `callId` берётся из `exec`, с запасным значением по времени.
 
-## `capResult` — [`index.js:572`](../index.js)
+## `capResult` — [`index.js:573`](../index.js)
 
 ```
 limit <= 0 || text.length <= limit        → text как есть
@@ -68,7 +68,7 @@ spillStore отсутствует / сохранить не удалось → w
 
 ## Стратегия `summary`
 
-`summarizeResult` — [`index.js:609`](../index.js):
+`summarizeResult` — [`index.js:610`](../index.js):
 
 1. **Тот же слот** пула `read`, что и у обрезанного вызова, получает
    `summaryPrompt` — дайджест по **полному** тексту (обрезанному до

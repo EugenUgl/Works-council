@@ -114,10 +114,16 @@ export function buildSource(source, markdown) {
 				'Восстановите блок объявления README_MARKDOWN между ними.',
 		);
 	}
+	// Переводы строк нормализуются до `\n` до обработки. Регулярные выражения
+	// вырезания (`\n---\n`, `(?=\n## |$)`) на CRLF-файле не срабатывают, и тогда
+	// раздел «Правило проекта» просачивается на вкладку README — тексты
+	// расходятся молча, а падает только тест. README на Windows-чекауте может
+	// быть сохранён любым редактором, поэтому полагаться на один вариант нельзя.
+	const normalized = markdown.replace(/\r\n/g, '\n');
 	const lines = source.split('\n');
 	const next = [
 		...lines.slice(0, range.start + 1),
-		...blockLines(markdown),
+		...blockLines(normalized),
 		...lines.slice(range.end),
 	];
 	return next.join('\n');

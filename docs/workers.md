@@ -7,7 +7,7 @@
 Воркер — **долгоживущая дочерняя сессия**, созданная через
 `ctx.subagents.startActivation`. Воркеры одного типа задачи образуют **пул**:
 `read`, `web` и `write` получают по три сессии, `think` — одну
-(`WORKERS_PER_TASK`, [`index.js:77`](../index.js)). Размер пула — константа
+(`WORKERS_PER_TASK`, [`index.js:78`](../index.js)). Размер пула — константа
 кода, а не поле конфига: строка настроек и её страница не меняются.
 
 Создание **ленивое на двух уровнях**:
@@ -22,7 +22,7 @@
 сессии; три сессии — цена параллелизма, которую платят только при
 одновременных вызовах.
 
-`workerFor` — [`index.js:1018`](../index.js) — возвращает пул
+`workerFor` — [`index.js:1019`](../index.js) — возвращает пул
 `{ task, workers[] }`; запись слота содержит:
 
 | Поле | Смысл |
@@ -82,12 +82,15 @@ observation снимается в `finally` раньше, чем следующ�
 
 ## Очередь и выбор слота
 
-`dispatch` — [`index.js:1428`](../index.js):
+`dispatch` — [`index.js:1525`](../index.js):
 
 ```js
-const worker = pickWorker(workerFor(state, task));
+const worker = task === 'write' ? fileWorker(pool, args?.file_path) : pickWorker(pool);
+const key = task === 'write' ? fileKeyOf(state, args?.file_path) : undefined;
 worker.pending += 1;
-const run = worker.chain.then(() => runJob(...));
+const slotTail = worker.chain;
+const runOnSlot = () => slotTail.then(() => runJob(...));
+const run = key === undefined ? runOnSlot() : withFileGate(key, runOnSlot);
 worker.chain = run.then(() => {}, () => {});   // ошибка не рвёт цепочку
 const settle = () => { worker.pending -= 1; };
 run.then(settle, settle);
@@ -96,20 +99,30 @@ return run;
 
 - **У каждого слота своя цепочка**: одна сессия по-прежнему не ведёт два хода
   одновременно.
-- **`pickWorker` выбирает слот с наименьшим `pending`** — [`index.js:1065`](../index.js).
+- **`pickWorker` выбирает слот с наименьшим `pending`** — [`index.js:1066`](../index.js).
   Это и есть параллелизм пула: без выбора все вызовы вставали бы в одну
   цепочку, и три сессии ничего бы не изменили.
 - **Ничья уходит младшему слоту**, поэтому серийная задача копит историю на
   слоте 0, а не размазывает её по трём.
-- **`write`/`edit` выбираются иначе — по `file_path`** (`fileWorker`,
-  [`index.js:1093`](../index.js)). Один файл всегда попадает в один слот, то
-  есть в одну цепочку. Это не оптимизация, а условие корректности: снимок
-  `before` для проверки записи берётся **внутри** `runJob`, поэтому два
-  параллельных изменения одного файла предсказывали бы от одного и того же
-  содержимого, и автоисправление второго перезаписало бы файл по устаревшему
-  предсказанию — молча потеряв первую правку. Разные файлы по-прежнему
-  расходятся по слотам и идут параллельно; коллизия хэша стоит только
-  параллелизма, но не порядка.
+- **`write`/`edit` выбираются по `file_path`** (`fileWorker`,
+  [`index.js:1094`](../index.js)), чтобы правки одного файла держались на одной
+  тёплой истории.
+- **Гарантию даёт файловый шлюз, а не слот.** `withFileGate` — [`index.js:1159`](../index.js) —
+  держит блокировку на всё время задания, включая верификацию. Ключ —
+  **канонический путь** (`fileKeyOf`, [`index.js:1133`](../index.js)):
+  относительный путь разрешается от `cwd` корневого агента, на Windows
+  приводится к нижнему регистру. Поэтому `a.txt`, `./a.txt` и
+  `C:\ws\a.txt` — один и тот же файл с одним шлюзом, хотя слот по хэшу у них
+  может быть разным.
+- **Зачем шлюз, если есть слот.** Снимок `before` для проверки записи берётся
+  **внутри** `runJob`, а автоисправление перезаписывает файл целиком по
+  предсказанию. Два одновременных изменения одного файла предсказывали бы от
+  одного и того же содержимого, и второе молча стёрло бы первое. Слот по
+  литеральной строке этого не гарантирует — только шлюз по каноническому пути.
+- **Fallback тоже под шлюзом** (`executeDirect`, [`index.js:1191`](../index.js)):
+  прямой вызов инструмента больше не обходит очередь и не может выполняться,
+  пока по тому же файлу идёт чужой ход.
+- **Разные файлы идут параллельно** — шлюзы независимы, слоты разные.
 - **Сверх пула вызовы ждут**, а не открывают четвёртую сессию: освободившийся
   слот получает следующего из очереди (продолжение той же сессии).
 - **Разные типы задач независимы** — у каждого свой пул.
@@ -117,9 +130,11 @@ return run;
   через `.then(ok, err)`.
 
 Проверяется `test/pool.test.mjs`: три параллельных `read` поднимают три
-сессии, четвёртый вызов ждёт и продолжает освободившийся слот, восемь
-последовательных `read` остаются на слоте 0, два `write` одного файла идут
-строго по очереди, а разных — параллельно.
+сессии; четвёртый вызов ждёт и продолжает освободившийся слот; восемь
+последовательных `read` остаются на слоте 0; два `write` одного файла идут
+строго по очереди; **два разных написания одного пути не открывают второй
+писатель**; fallback не запускается при открытом чужом ходе; разные файлы
+пишутся параллельно.
 
 ### Пул и история
 
@@ -131,7 +146,7 @@ return run;
 
 ## Путь вызова
 
-`runJob` — [`index.js:1263`](../index.js):
+`runJob` — [`index.js:1358`](../index.js):
 
 1. `refreshWorkerEnvironment(state, worker)` — если окружение изменилось,
    `ctx.get('workingDirectory').set(child, cwd)` и `info`-лог; сессия та же.
@@ -148,7 +163,7 @@ return run;
 8. `catch`: `failures += 1`, `lastError`, `warn`, `throw`; **рецикла нет** —
    `turnSettled` лишь попадает в сообщение лога.
 
-### `startWorkerJob` — [`index.js:905`](../index.js)
+### `startWorkerJob` — [`index.js:906`](../index.js)
 
 - `ctx.subagents.startActivation({ provider, delivery: 'caller', request: { parent, prompt, cwd, agentOptions } })`.
 - `workersByChild.set(childId, { state, worker })` — чтобы наблюдатель ловил события.
@@ -161,7 +176,7 @@ return run;
 агент — поэтому сессия остаётся в `ctx.agents` и переиспользуется (контракт — в
 [`test/probe.test.mjs`](../test/probe.test.mjs)).
 
-### `continueWorkerJob` — [`index.js:944`](../index.js)
+### `continueWorkerJob` — [`index.js:945`](../index.js)
 
 - Свой `observation`/`job` с `finish`/`abort` и таймером; на таймаут —
   `interruptWorker`.
@@ -170,7 +185,7 @@ return run;
 - `signal.addEventListener('abort', onAbort, { once: true })`.
 - Возвращает `{ text, failed, usedTool, turnSettled }`.
 
-### `recycleChild` — [`index.js:833`](../index.js)
+### `recycleChild` — [`index.js:834`](../index.js)
 
 Сбрасывает `childId`, `jobs`, `environment`, `observation` **одного слота**,
 увеличивает `state.recycled`, учитывает причину в `state.recycleReasons`,
@@ -203,18 +218,18 @@ delegate-io: replacing the <task> worker <childId> (<reason>)
 
 ## Окружение воркера
 
-`environmentOf(root)` — [`index.js:634`](../index.js) — строка
+`environmentOf(root)` — [`index.js:635`](../index.js) — строка
 `"<sandboxPolicy.mode>\0<cwd>"`.
 
 Воркер фиксировал разрешения и рабочий каталог родителя при создании. Теперь
 рассинхронизация **не** пересоздаёт сессию: `refreshWorkerEnvironment`
-([`index.js:1168`](../index.js)) перепривязывает воркера к текущему `cwd`
+([`index.js:1263`](../index.js)) перепривязывает воркера к текущему `cwd`
 через сервис `workingDirectory` и логирует это. Если перепривязка не удалась —
 `warn`, но сессия сохраняется.
 
 ## Лимит контекста и компакция
 
-`compactWorkerIfOverLimit` — [`index.js:1201`](../index.js) — **единственный**
+`compactWorkerIfOverLimit` — [`index.js:1296`](../index.js) — **единственный**
 триггер замены:
 
 1. `limit = contextLimitOf(task)`; `0` — лимита нет, выходим.
@@ -233,7 +248,7 @@ delegate-io: replacing the <task> worker <childId> (<reason>)
 
 ### Почему `surfaceTokens`
 
-`contextTokensOf` — [`index.js:1142`](../index.js) — читает
+`contextTokensOf` — [`index.js:1237`](../index.js) — читает
 `tokenMeter.measure(session).surfaceTokens`, **не** `contextPressure()`.
 Обоснование — [`decisions.md`](decisions.md#d3-почему-surfacetokens-а-не-contextpressure).
 Коротко: `pressureTokens = input + cacheRead + cacheWrite`, и кэшированный
@@ -245,14 +260,14 @@ delegate-io: replacing the <task> worker <childId> (<reason>)
 поэтому лимит консервативен. Если нужна точность — добавлять компоненты
 сверху, а не менять метрику.
 
-## `liveWorkerAgent` — [`index.js:1111`](../index.js)
+## `liveWorkerAgent` — [`index.js:1206`](../index.js)
 
 Поиск живой сессии двумя путями: `ctx.agents.get(childId)`, затем
 `ctx.agents.list().find(...)`. Ошибка списка логируется и даёт `undefined`.
 
 ## Отключение задачи на лету
 
-`retireIdleWorker(state, task)` — [`index.js:868`](../index.js). Вызывается из
+`retireIdleWorker(state, task)` — [`index.js:869`](../index.js). Вызывается из
 клона при `${task}Enabled === false`. Воркер **не** освобождается: сервис
 только пишет `info`-лог, а резидентная сессия дожидается повторного включения
 задачи (и тогда обслуживает вызов с сохранённой историей) или своего лимита
