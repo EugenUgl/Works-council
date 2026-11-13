@@ -1,0 +1,43 @@
+# Delegate IO: the main agent's file reads, web reads, and file writes run in
+# delegated subagents instead of in the main agent's own loop. Each task type
+# has its own worker route; the settings page on this row edits these fields.
+#
+# Every field is `.volatile()` in the plugin's Config, which is what makes the
+# Host project it into the row's settings form.
+- insert:
+    - id: delegate-io
+      name: '@local/dsh-plugin-delegate-io'
+      config:
+        readEnabled: true
+        readProvider: ''
+        readModel: ''
+        readReasoningEffort: ''
+        readMaxContextTokens: 0
+        webEnabled: true
+        webProvider: ''
+        webModel: ''
+        webReasoningEffort: ''
+        webMaxContextTokens: 0
+        writeEnabled: true
+        writeProvider: ''
+        writeModel: ''
+        writeReasoningEffort: ''
+        writeMaxContextTokens: 0
+        thinkEnabled: false
+        thinkProvider: ''
+        thinkModel: ''
+        thinkReasoningEffort: high
+        thinkMaxContextTokens: 0
+        thinkMaxTurns: 2
+        thinkEscalateAfter: 2
+        subagentProvider: spawn
+        requestTimeoutMs: 900000
+        fallbackToDirect: true
+        maxJobsPerWorker: 25
+        workerIdleMs: 600000
+        maxResultChars: 12000
+        verifyWrites: true
+        inspectEnabled: true
+        inspectMaxChars: 4000
+        depthBudget: normal
+        budgetStrategy: spill

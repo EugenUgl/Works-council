@@ -1,0 +1,47 @@
+{
+  "name": "@local/dsh-plugin-delegate-io",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:readme": "node scripts/build-readme.mjs",
+    "test": "node test/readme-tabs.test.mjs && node test/schema.test.mjs && node test/prestep.test.mjs && node test/live-enable.test.mjs && node test/result.test.mjs && node test/inspect.test.mjs && node test/think.test.mjs && node test/probe.test.mjs && node test/context-limit.test.mjs && node test/pool.test.mjs && node test/worker-lifetime.test.mjs"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "scripts/build-readme.mjs",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "docs"
+  ],
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.19.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-api-session-controller",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-plugin-manager",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    }
+  }
+}
